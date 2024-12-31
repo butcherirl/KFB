@@ -1,3 +1,8 @@
 Flask
 gunicorn
 aiohttp
+python-telegram-bot
+httpx
+beautifulsoup4
+python-dotenv
+lxml
