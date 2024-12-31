@@ -1,1 +1,1 @@
-worker: python kfb.py
+web: python kfb.py
