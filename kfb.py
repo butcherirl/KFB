@@ -1,3 +1,5 @@
+# If you are using Flask for webhooks, you can set it up like this:
+from flask import Flask, request
 import os
 import logging
 import aiohttp
@@ -15,6 +17,9 @@ BOT_TOKEN = os.getenv("BOT_TOKEN")
 # Configure logging
 logging.basicConfig(format='%(asctime)s - %(name)s - %(levelname)s - %(message)s', level=logging.INFO)
 logger = logging.getLogger(__name__)
+
+# Flask app if using webhooks
+app = Flask(__name__)
 
 # Source configurations
 SOURCES = [
