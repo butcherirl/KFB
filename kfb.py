@@ -1,7 +1,6 @@
 import os
 import logging
 import aiohttp
-import asyncio
 from telegram import Update, InlineKeyboardButton, InlineKeyboardMarkup
 from telegram.ext import Application, CommandHandler, MessageHandler, CallbackQueryHandler, filters, ContextTypes
 from telegram.constants import ParseMode
@@ -31,7 +30,6 @@ GROUP_LINK = "https://t.me/BASEMENT_GC"
 async def start(update: Update, context: ContextTypes.DEFAULT_TYPE):
     keyboard = [
         [InlineKeyboardButton("🏠 Our Group", url=GROUP_LINK)],
-        [InlineKeyboardButton("🔍 Search Movie", switch_inline_query_current_chat="")]
     ]
     reply_markup = InlineKeyboardMarkup(keyboard)
     
@@ -100,10 +98,9 @@ async def search_movie(update: Update, context: ContextTypes.DEFAULT_TYPE):
                     )
                     return
 
-                keyboard = []
-                for idx, (title, url) in enumerate(results):
-                    keyboard.append([InlineKeyboardButton(f"🎬 {title}", callback_data=f"dl:{idx}")])
-                
+                keyboard = [
+                    [InlineKeyboardButton(f"🎬 {title}", callback_data=f"dl:{idx}")] for idx, (title, _) in enumerate(results)
+                ]
                 keyboard.append([InlineKeyboardButton("🏠 Join Our Group", url=GROUP_LINK)])
                 reply_markup = InlineKeyboardMarkup(keyboard)
 
