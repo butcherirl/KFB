@@ -2,7 +2,7 @@ import os
 import logging
 import aiohttp
 from telegram import Update, InlineKeyboardButton, InlineKeyboardMarkup
-from telegram.ext import Application, CommandHandler, MessageHandler, CallbackQueryHandler, filters, ContextTypes, CallbackContext
+from telegram.ext import Application, CommandHandler, MessageHandler, CallbackQueryHandler, filters, ContextTypes
 from telegram.constants import ParseMode
 from bs4 import BeautifulSoup
 import urllib.parse
@@ -11,23 +11,30 @@ import nest_asyncio
 from flask import Flask, request
 from dotenv import load_dotenv
 import random
+
 # Apply nest_asyncio
 nest_asyncio.apply()
+
 # Load environment variables
 load_dotenv()
 BOT_TOKEN = os.getenv("BOT_TOKEN")
-WEBHOOK_URL = os.getenv("WEBHOOK_URL") # This is your render app url
+WEBHOOK_URL = os.getenv("WEBHOOK_URL")  # This is your render app URL
+
 # Configure logging
 logging.basicConfig(format='%(asctime)s - %(name)s - %(levelname)s - %(message)s', level=logging.INFO)
 logger = logging.getLogger(__name__)
+
 # Source configuration
 SOURCE = {
     "base_url": "https://new3.scloud.ninja",
     "search_url": "{base_url}?search={query}",
 }
+
 LOADING_ANIMATIONS = ["⏳", "🔄", "🔍", "✨", "🎥"]
+
 # Initialize Flask
 app = Flask(__name__)
+
 async def start(update: Update, context: ContextTypes.DEFAULT_TYPE):
     keyboard = [
         [InlineKeyboardButton("🏠 Our Group", url="https://t.me/BASEMENT_GC")],
@@ -42,6 +49,7 @@ async def start(update: Update, context: ContextTypes.DEFAULT_TYPE):
         "🌟 *Powered by @TheKnightFlix*"
     )
     await update.message.reply_text(welcome_text, parse_mode=ParseMode.MARKDOWN, reply_markup=reply_markup)
+
 async def search_movie(update: Update, context: ContextTypes.DEFAULT_TYPE):
     query = update.message.text.strip()
     if not query:
@@ -112,6 +120,7 @@ async def search_movie(update: Update, context: ContextTypes.DEFAULT_TYPE):
             "Please try again later.",
             parse_mode=ParseMode.MARKDOWN
         )
+
 async def handle_result_selection(update: Update, context: ContextTypes.DEFAULT_TYPE):
     query = update.callback_query
     await query.answer()
@@ -173,6 +182,7 @@ async def handle_result_selection(update: Update, context: ContextTypes.DEFAULT_
                     )
     except Exception as e:
         logger.error(f"Selection error: {e}")
+
 async def help_command(update: Update, context: ContextTypes.DEFAULT_TYPE):
     await update.message.reply_text(
         "📖 *Help Menu:*\n\n"
@@ -181,7 +191,7 @@ async def help_command(update: Update, context: ContextTypes.DEFAULT_TYPE):
         "Type any movie name to search.",
         parse_mode=ParseMode.MARKDOWN
     )
-# Setup handlers
+
 async def setup_bot():
     application = Application.builder().token(BOT_TOKEN).build()
     application.add_handler(CommandHandler("start", start))
@@ -196,18 +206,19 @@ async def setup_bot():
         logger.error(f"Failed to set webhook: {e}")
 
     return application
-# Flask route for handling Telegram updates
+
 @app.route('/webhook', methods=['POST'])
 async def telegram_webhook():
-    application = await setup_bot()  
+    application = await setup_bot()
     update = Update.de_json(request.get_json(force=True), application.bot)
     await application.process_update(update)
     return "OK", 200
+
 @app.route('/', methods=['GET'])
 def index():
     return "Bot is running!", 200
+
 if __name__ == '__main__':
-    # Run setup_bot before starting Flask
     asyncio.run(setup_bot())
     port = int(os.environ.get("PORT", 8000))
     app.run(host="0.0.0.0", port=port)
