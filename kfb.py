@@ -1,5 +1,3 @@
-# If you are using Flask for webhooks, you can set it up like this:
-from flask import Flask, request
 import os
 import logging
 import aiohttp
@@ -8,7 +6,10 @@ from telegram.ext import Application, CommandHandler, MessageHandler, CallbackQu
 from telegram.constants import ParseMode
 from bs4 import BeautifulSoup
 import urllib.parse
+import asyncio
+import nest_asyncio
 from dotenv import load_dotenv
+import random
 
 # Load environment variables
 load_dotenv()
@@ -18,23 +19,21 @@ BOT_TOKEN = os.getenv("BOT_TOKEN")
 logging.basicConfig(format='%(asctime)s - %(name)s - %(levelname)s - %(message)s', level=logging.INFO)
 logger = logging.getLogger(__name__)
 
-# Flask app if using webhooks
-app = Flask(__name__)
+# Apply nest_asyncio
+nest_asyncio.apply()
 
-# Source configurations
-SOURCES = [
-    {
-        "name": "Source 1",
-        "base_url": "https://new3.scloud.ninja",
-        "search_url": "{base_url}?search={query}",
-    },
-]
+# Source configuration
+SOURCE = {
+    "base_url": "https://new3.scloud.ninja",
+    "search_url": "{base_url}?search={query}",
+}
 
-GROUP_LINK = "https://t.me/BASEMENT_GC"
+LOADING_ANIMATIONS = ["⏳", "🔄", "🔍", "✨", "🎥"]
 
 async def start(update: Update, context: ContextTypes.DEFAULT_TYPE):
     keyboard = [
-        [InlineKeyboardButton("🏠 Our Group", url=GROUP_LINK)],
+        [InlineKeyboardButton("🏠 Our Group", url="https://t.me/BASEMENT_GC")],
+        [InlineKeyboardButton("🔍 Search Movie", switch_inline_query_current_chat="")]
     ]
     reply_markup = InlineKeyboardMarkup(keyboard)
     
@@ -44,11 +43,7 @@ async def start(update: Update, context: ContextTypes.DEFAULT_TYPE):
         "🔍 Just type any movie/series name to begin!\n\n"
         "🌟 *Powered by @TheKnightFlix*"
     )
-    await update.message.reply_text(
-        welcome_text,
-        parse_mode=ParseMode.MARKDOWN,
-        reply_markup=reply_markup
-    )
+    await update.message.reply_text(welcome_text, parse_mode=ParseMode.MARKDOWN, reply_markup=reply_markup)
 
 async def search_movie(update: Update, context: ContextTypes.DEFAULT_TYPE):
     query = update.message.text.strip()
@@ -59,80 +54,75 @@ async def search_movie(update: Update, context: ContextTypes.DEFAULT_TYPE):
     user_mention = f"[{user.first_name}](tg://user?id={user.id})"
     reply_to_message_id = update.message.message_id
 
+    animation = random.choice(LOADING_ANIMATIONS)
     status_message = await update.message.reply_text(
-        f"🔍 *Searching...* {user_mention}",
-        parse_mode=ParseMode.MARKDOWN
+        f"{animation} *Searching for:* `{query}`\n{user_mention}",
+        parse_mode=ParseMode.MARKDOWN,
+        reply_to_message_id=reply_to_message_id
     )
 
-    async with aiohttp.ClientSession() as session:
-        try:
-            search_url = SOURCES[0]["search_url"].format(
-                base_url=SOURCES[0]["base_url"],
-                query=urllib.parse.quote(query)
-            )
-            
+    try:
+        search_url = SOURCE["search_url"].format(
+            base_url=SOURCE["base_url"],
+            query=urllib.parse.quote(query)
+        )
+        
+        async with aiohttp.ClientSession() as session:
             async with session.get(search_url, timeout=10) as response:
                 html = await response.text()
                 soup = BeautifulSoup(html, 'html.parser')
                 results = []
                 
                 for result in soup.find_all('a', class_='block')[:5]:
-                    title = result.text.strip()
-                    href = result.get('href')
-                    if href:
-                        movie_url = f"{SOURCES[0]['base_url'].rstrip('/')}/{href.lstrip('/')}"
-                        results.append((title, movie_url))
+                    result_card = result.find('div', class_='result-card rounded-lg p-4')
+                    if not result_card:
+                        continue
+                    title_div = result_card.find('div', class_='mb-3')
+                    if not title_div:
+                        continue
+                    movie_title = title_div.text.strip()
+                    movie_href = result['href']
+                    movie_url = f"{SOURCE['base_url']}{movie_href}"
+                    results.append((movie_title, movie_url))
 
                 if not results:
                     google_search_url = f"https://www.google.com/search?q={urllib.parse.quote(query)}+movie+download"
                     keyboard = [
                         [InlineKeyboardButton("🔍 Search on Google", url=google_search_url)],
-                        [InlineKeyboardButton("🏠 Join Our Group", url=GROUP_LINK)]
+                        [InlineKeyboardButton("🏠 Join Our Group", url="https://t.me/BASEMENT_GC")]
                     ]
                     reply_markup = InlineKeyboardMarkup(keyboard)
                     
-                    await context.bot.send_message(
-                        chat_id=update.effective_chat.id,
-                        text=(
-                            f"❌ *No results found!* {user_mention}\n\n"
-                            "Try searching on Google or join our group for help."
-                        ),
+                    await status_message.edit_text(
+                        f"❌ *No results found!* {user_mention}\n\n"
+                        "Try searching on Google or join our group for help.",
                         parse_mode=ParseMode.MARKDOWN,
-                        reply_markup=reply_markup,
-                        reply_to_message_id=reply_to_message_id
+                        reply_markup=reply_markup
                     )
                     return
 
-                keyboard = [
-                    [InlineKeyboardButton(f"🎬 {title}", callback_data=f"dl:{idx}")] for idx, (title, _) in enumerate(results)
-                ]
-                keyboard.append([InlineKeyboardButton("🏠 Join Our Group", url=GROUP_LINK)])
+                keyboard = []
+                for idx, (title, url) in enumerate(results):
+                    keyboard.append([InlineKeyboardButton(f"🎬 {title}", callback_data=f"dl:{idx}")])
+                keyboard.append([InlineKeyboardButton("🏠 Join Our Group", url="https://t.me/BASEMENT_GC")])
                 reply_markup = InlineKeyboardMarkup(keyboard)
 
-                await context.bot.send_message(
-                    chat_id=update.effective_chat.id,
-                    text=(
-                        f"*🎯 Search Results:* {user_mention}\n\n"
-                        "Select a title to get the download link:"
-                    ),
+                await status_message.edit_text(
+                    f"🎯 *Found {len(results)} results* {user_mention}\n\n"
+                    "Select a movie to get the download link:",
                     parse_mode=ParseMode.MARKDOWN,
-                    reply_markup=reply_markup,
-                    reply_to_message_id=reply_to_message_id
+                    reply_markup=reply_markup
                 )
 
                 context.user_data['search_results'] = results
 
-        except Exception as e:
-            logger.error(f"Search error: {e}")
-            await context.bot.send_message(
-                chat_id=update.effective_chat.id,
-                text=(
-                    f"❌ *An error occurred* {user_mention}\n\n"
-                    "Please try again later."
-                ),
-                parse_mode=ParseMode.MARKDOWN,
-                reply_to_message_id=reply_to_message_id
-            )
+    except Exception as e:
+        logger.error(f"Search error: {e}")
+        await status_message.edit_text(
+            f"❌ *An error occurred* {user_mention}\n\n"
+            "Please try again later.",
+            parse_mode=ParseMode.MARKDOWN
+        )
 
 async def handle_result_selection(update: Update, context: ContextTypes.DEFAULT_TYPE):
     query = update.callback_query
@@ -149,7 +139,7 @@ async def handle_result_selection(update: Update, context: ContextTypes.DEFAULT_
             user_mention = f"[{user.first_name}](tg://user?id={user.id})"
 
             status_message = await query.edit_message_text(
-                f"*🎯 Fetching download link...* {user_mention}",
+                f"🎯 *Fetching download link...* {user_mention}",
                 parse_mode=ParseMode.MARKDOWN
             )
 
@@ -163,67 +153,65 @@ async def handle_result_selection(update: Update, context: ContextTypes.DEFAULT_
                         if download_button:
                             download_url = download_button['href']
                             if not download_url.startswith("http"):
-                                download_url = f"{SOURCES[0]['base_url'].rstrip('/')}/{download_url.lstrip('/')}"
+                                download_url = f"{SOURCE['base_url'].rstrip('/')}/{download_url.lstrip('/')}"
 
                             keyboard = [
                                 [InlineKeyboardButton("⬇️ Download Now", url=download_url)],
-                                [InlineKeyboardButton("🏠 Join Our Group", url=GROUP_LINK)]
+                                [InlineKeyboardButton("🏠 Join Our Group", url="https://t.me/BASEMENT_GC")]
                             ]
                             reply_markup = InlineKeyboardMarkup(keyboard)
 
-                            await context.bot.send_message(
-                                chat_id=query.message.chat_id,
-                                text=(
-                                    f"*🎉 Download Ready!* {user_mention}\n\n"
-                                    f"*Title:* `{title}`\n\n"
-                                    f"*Click the button below to download:*"
-                                ),
+                            await status_message.edit_text(
+                                f"*🎉 Download Ready!* {user_mention}\n\n"
+                                f"*Title:* `{title}`\n\n"
+                                f"*Click the button below to download:*",
                                 parse_mode=ParseMode.MARKDOWN,
-                                reply_markup=reply_markup,
-                                reply_to_message_id=query.message.message_id
+                                reply_markup=reply_markup
                             )
                         else:
                             google_search_url = f"https://www.google.com/search?q={urllib.parse.quote(title)}+movie+download"
                             keyboard = [
                                 [InlineKeyboardButton("🔍 Search on Google", url=google_search_url)],
-                                [InlineKeyboardButton("🏠 Join Our Group", url=GROUP_LINK)]
+                                [InlineKeyboardButton("🏠 Join Our Group", url="https://t.me/BASEMENT_GC")]
                             ]
                             reply_markup = InlineKeyboardMarkup(keyboard)
                             
-                            await context.bot.send_message(
-                                chat_id=query.message.chat_id,
-                                text=(
-                                    f"❌ *Download link not found* {user_mention}\n\n"
-                                    "Try searching on Google or join our group for help."
-                                ),
+                            await status_message.edit_text(
+                                f"❌ *Download link not found* {user_mention}\n\n"
+                                "Try searching on Google or join our group for help.",
                                 parse_mode=ParseMode.MARKDOWN,
-                                reply_markup=reply_markup,
-                                reply_to_message_id=query.message.message_id
+                                reply_markup=reply_markup
                             )
 
                 except Exception as e:
                     logger.error(f"Download error: {e}")
-                    await context.bot.send_message(
-                        chat_id=query.message.chat_id,
-                        text=(
-                            f"❌ *Failed to fetch download link* {user_mention}\n\n"
-                            "Please try again later."
-                        ),
-                        parse_mode=ParseMode.MARKDOWN,
-                        reply_to_message_id=query.message.message_id
+                    await status_message.edit_text(
+                        f"❌ *Failed to fetch download link* {user_mention}\n\n"
+                        "Please try again later.",
+                        parse_mode=ParseMode.MARKDOWN
                     )
 
     except Exception as e:
         logger.error(f"Selection error: {e}")
 
+async def help_command(update: Update, context: ContextTypes.DEFAULT_TYPE):
+    await update.message.reply_text(
+        "📖 *Help Menu:*\n\n"
+        "/start - Start the bot\n"
+        "/help - Show this help message\n"
+        "Type any movie name to search.",
+        parse_mode=ParseMode.MARKDOWN
+    )
+
 def main():
     application = Application.builder().token(BOT_TOKEN).build()
 
     application.add_handler(CommandHandler("start", start))
+    application.add_handler(CommandHandler("help", help_command))
     application.add_handler(MessageHandler(filters.TEXT & ~filters.COMMAND, search_movie))
     application.add_handler(CallbackQueryHandler(handle_result_selection, pattern="^dl:"))
 
-    logger.info("@TheKnightFlix Bot is running...")
+    logger.info("Bot is running...")
     application.run_polling()
 
 if __name__ == "__main__":
