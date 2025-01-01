@@ -1,10 +1,10 @@
-Flask
 gunicorn
-aiohttp
-python-telegram-bot
 httpx
-beautifulsoup4
-python-dotenv
 lxml
 requests
-nest_asyncio
+python-telegram-bot20.7
+beautifulsoup44.12.3
+aiohttp3.9.1
+flask3.0.0
+nest_asyncio1.5.8
+python-dotenv1.0.0
