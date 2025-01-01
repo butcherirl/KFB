@@ -1,10 +1,6 @@
-gunicorn
-httpx
-lxml
-requests
 python-telegram-bot
-beautifulsoup
-aiohttp
 flask
-nest_asyncio
+aiohttp
+beautifulsoup4
 python-dotenv
+gunicorn
