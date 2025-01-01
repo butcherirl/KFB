@@ -1,9 +1,7 @@
 import os
-import logging
-import aiohttp
 from telegram import Update, InlineKeyboardButton, InlineKeyboardMarkup
-from telegram.ext import Application, CommandHandler, MessageHandler, CallbackQueryHandler, filters, ContextTypes
-from telegram.constants import ParseMode
+from telegram.ext import Application, CommandHandler, MessageHandler, filters, ContextTypes
+import requests
 from bs4 import BeautifulSoup
 import urllib.parse
 import asyncio
@@ -13,194 +11,143 @@ import random
 
 # Load environment variables
 load_dotenv()
-BOT_TOKEN = os.getenv("BOT_TOKEN")
 
-# Configure logging
-logging.basicConfig(format='%(asctime)s - %(name)s - %(levelname)s - %(message)s', level=logging.INFO)
-logger = logging.getLogger(__name__)
-
-# Apply nest_asyncio
+# Apply nest_asyncio to fix event loop issues
 nest_asyncio.apply()
 
-# Source configuration
-SOURCE = {
-    "base_url": "https://new3.scloud.ninja",
-    "search_url": "{base_url}?search={query}",
-}
+BOT_TOKEN = os.getenv("BOT_TOKEN")
 
-LOADING_ANIMATIONS = ["⏳", "🔄", "🔍", "✨", "🎥"]
+# Sources
+SOURCES = [
+    {
+        "base_url": "https://new3.scloud.ninja",
+        "search_url": "{base_url}?search={query}",
+        "process_results": "process_source1_results",
+    },
+    {
+        "base_url": "https://www.oomoye.life",
+        "search_url": "{base_url}/search.php?q={query}",
+        "process_results": "process_source2_results",
+    },
+    {
+        "base_url": "https://katmoviehd.nexus",
+        "search_url": "{base_url}/?s={query}",
+        "process_results": "process_source3_results",
+    },
+]
+
+ANIMATIONS = ["⏳", "🔄", "🔍", "✨", "🎥"]
 
 async def start(update: Update, context: ContextTypes.DEFAULT_TYPE):
-    keyboard = [
-        [InlineKeyboardButton("🏠 Our Group", url="https://t.me/BASEMENT_GC")],
-        [InlineKeyboardButton("🔍 Search Movie", switch_inline_query_current_chat="")]
-    ]
+    keyboard = [[InlineKeyboardButton("Search Movies", callback_data='search')]]
     reply_markup = InlineKeyboardMarkup(keyboard)
-    
-    welcome_text = (
-        "🎬 *Welcome to @TheKnightFlix Bot* 🎥\n\n"
-        "Your Ultimate Movie & Series Companion!\n\n"
-        "🔍 Just type any movie/series name to begin!\n\n"
-        "🌟 *Powered by @TheKnightFlix*"
+    await update.message.reply_text(
+        "Welcome to the Ultimate Movie Bot! 🎬\nUse the button below to search for movies.",
+        reply_markup=reply_markup
     )
-    await update.message.reply_text(welcome_text, parse_mode=ParseMode.MARKDOWN, reply_markup=reply_markup)
 
 async def search_movie(update: Update, context: ContextTypes.DEFAULT_TYPE):
-    query = update.message.text.strip()
-    if not query:
-        return
+    message = update.message.text
+    animation = random.choice(ANIMATIONS)
+    await update.message.reply_text(f"{animation} Searching for: {message} \n Please wait...")
 
-    user = update.effective_user
-    user_mention = f"[{user.first_name}](tg://user?id={user.id})"
-    reply_to_message_id = update.message.message_id
+    query = urllib.parse.quote(message)
+    for source in SOURCES:
+        try:
+            search_url = source["search_url"].format(base_url=source["base_url"], query=query)
+            response = requests.get(search_url, headers={
+                'User-Agent': 'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/91.0.4472.124 Safari/537.36'
+            })
+            response.raise_for_status()
+            soup = BeautifulSoup(response.text, 'html.parser')
 
-    animation = random.choice(LOADING_ANIMATIONS)
-    status_message = await update.message.reply_text(
-        f"{animation} *Searching for:* `{query}`\n{user_mention}",
-        parse_mode=ParseMode.MARKDOWN,
-        reply_to_message_id=reply_to_message_id
-    )
+            # Call the appropriate processing function for the source
+            process_func = globals()[source["process_results"]]
+            results = await process_func(soup, context)
 
-    try:
-        search_url = SOURCE["search_url"].format(
-            base_url=SOURCE["base_url"],
-            query=urllib.parse.quote(query)
-        )
-        
-        async with aiohttp.ClientSession() as session:
-            async with session.get(search_url, timeout=10) as response:
-                html = await response.text()
-                soup = BeautifulSoup(html, 'html.parser')
-                results = []
-                
-                for result in soup.find_all('a', class_='block')[:5]:
-                    result_card = result.find('div', class_='result-card rounded-lg p-4')
-                    if not result_card:
-                        continue
-                    title_div = result_card.find('div', class_='mb-3')
-                    if not title_div:
-                        continue
-                    movie_title = title_div.text.strip()
-                    movie_href = result['href']
-                    movie_url = f"{SOURCE['base_url']}{movie_href}"
-                    results.append((movie_title, movie_url))
-
-                if not results:
-                    google_search_url = f"https://www.google.com/search?q={urllib.parse.quote(query)}+movie+download"
-                    keyboard = [
-                        [InlineKeyboardButton("🔍 Search on Google", url=google_search_url)],
-                        [InlineKeyboardButton("🏠 Join Our Group", url="https://t.me/BASEMENT_GC")]
-                    ]
-                    reply_markup = InlineKeyboardMarkup(keyboard)
-                    
-                    await status_message.edit_text(
-                        f"❌ *No results found!* {user_mention}\n\n"
-                        "Try searching on Google or join our group for help.",
-                        parse_mode=ParseMode.MARKDOWN,
-                        reply_markup=reply_markup
-                    )
-                    return
-
-                keyboard = []
-                for idx, (title, url) in enumerate(results):
-                    keyboard.append([InlineKeyboardButton(f"🎬 {title}", callback_data=f"dl:{idx}")])
-                keyboard.append([InlineKeyboardButton("🏠 Join Our Group", url="https://t.me/BASEMENT_GC")])
+            if results:
+                keyboard = [
+                    [InlineKeyboardButton(title, url=url)] for title, url in results[:7]
+                ]
+                keyboard.append([InlineKeyboardButton("Search Another Source 🔄", callback_data=f"search_next:{query}")])
                 reply_markup = InlineKeyboardMarkup(keyboard)
-
-                await status_message.edit_text(
-                    f"🎯 *Found {len(results)} results* {user_mention}\n\n"
-                    "Select a movie to get the download link:",
-                    parse_mode=ParseMode.MARKDOWN,
+                await update.message.reply_text(
+                    "📽️ Search Results:",
                     reply_markup=reply_markup
                 )
+                return
+        except Exception as e:
+            print(f"Error fetching from {source['base_url']}: {e}")
 
-                context.user_data['search_results'] = results
+    await update.message.reply_text("❌ No movies found across all sources.")
 
-    except Exception as e:
-        logger.error(f"Search error: {e}")
-        await status_message.edit_text(
-            f"❌ *An error occurred* {user_mention}\n\n"
-            "Please try again later.",
-            parse_mode=ParseMode.MARKDOWN
-        )
+async def process_source1_results(soup, context):
+    results = []
+    for result in soup.find_all('a', class_='block'):
+        result_card = result.find('div', class_='result-card rounded-lg p-4')
+        if not result_card:
+            continue
+        title_div = result_card.find('div', class_='mb-3')
+        if not title_div:
+            continue
+        movie_title = title_div.text.strip()
+        movie_href = result['href']
+        movie_url = f"https://new3.scloud.ninja{movie_href}"
+        results.append((movie_title, movie_url))
+    return results
 
-async def handle_result_selection(update: Update, context: ContextTypes.DEFAULT_TYPE):
+async def process_source2_results(soup, context):
+    results = []
+    for result in soup.find_all('a', title=True):
+        title = result.text.strip()
+        href = result['href']
+        results.append((title, href))
+    return results
+
+async def process_source3_results(soup, context):
+    results = []
+    for result in soup.find_all('a', title=True)[:3]:
+        title = result['title']
+        href = result['href']
+        results.append((title, href))
+    return results
+
+async def handle_callback_query(update: Update, context: ContextTypes.DEFAULT_TYPE):
     query = update.callback_query
+    data = query.data
     await query.answer()
 
-    try:
-        _, selected_idx = query.data.split(":")
-        selected_num = int(selected_idx)
-        results = context.user_data.get('search_results', [])
-        
-        if 0 <= selected_num < len(results):
-            title, url = results[selected_num]
-            user = query.from_user
-            user_mention = f"[{user.first_name}](tg://user?id={user.id})"
+    if data.startswith("search_next:"):
+        search_term = data.split(":")[1]
 
-            status_message = await query.edit_message_text(
-                f"🎯 *Fetching download link...* {user_mention}",
-                parse_mode=ParseMode.MARKDOWN
-            )
+        # Delete the previous two messages
+        chat_id = query.message.chat_id
+        message_id = query.message.message_id
+        try:
+            await context.bot.delete_message(chat_id=chat_id, message_id=message_id)
+            await context.bot.delete_message(chat_id=chat_id, message_id=message_id - 1)
+        except Exception as e:
+            print(f"Error deleting messages: {e}")
 
-            async with aiohttp.ClientSession() as session:
-                try:
-                    async with session.get(url, timeout=10) as response:
-                        html = await response.text()
-                        soup = BeautifulSoup(html, 'html.parser')
-                        download_button = soup.find('a', href=True, class_='block w-full')
+        # Send a new wait message with updated animation
+        new_animation = random.choice(ANIMATIONS)
+        wait_message = await context.bot.send_message(
+            chat_id=chat_id,
+            text=f"{new_animation} Searching in the next source for: {search_term} \n Please wait..."
+        )
 
-                        if download_button:
-                            download_url = download_button['href']
-                            if not download_url.startswith("http"):
-                                download_url = f"{SOURCE['base_url'].rstrip('/')}/{download_url.lstrip('/')}"
+        # Simulate searching in the next source
+        await asyncio.sleep(2)
 
-                            keyboard = [
-                                [InlineKeyboardButton("⬇️ Download Now", url=download_url)],
-                                [InlineKeyboardButton("🏠 Join Our Group", url="https://t.me/BASEMENT_GC")]
-                            ]
-                            reply_markup = InlineKeyboardMarkup(keyboard)
-
-                            await status_message.edit_text(
-                                f"*🎉 Download Ready!* {user_mention}\n\n"
-                                f"*Title:* `{title}`\n\n"
-                                f"*Click the button below to download:*",
-                                parse_mode=ParseMode.MARKDOWN,
-                                reply_markup=reply_markup
-                            )
-                        else:
-                            google_search_url = f"https://www.google.com/search?q={urllib.parse.quote(title)}+movie+download"
-                            keyboard = [
-                                [InlineKeyboardButton("🔍 Search on Google", url=google_search_url)],
-                                [InlineKeyboardButton("🏠 Join Our Group", url="https://t.me/BASEMENT_GC")]
-                            ]
-                            reply_markup = InlineKeyboardMarkup(keyboard)
-                            
-                            await status_message.edit_text(
-                                f"❌ *Download link not found* {user_mention}\n\n"
-                                "Try searching on Google or join our group for help.",
-                                parse_mode=ParseMode.MARKDOWN,
-                                reply_markup=reply_markup
-                            )
-
-                except Exception as e:
-                    logger.error(f"Download error: {e}")
-                    await status_message.edit_text(
-                        f"❌ *Failed to fetch download link* {user_mention}\n\n"
-                        "Please try again later.",
-                        parse_mode=ParseMode.MARKDOWN
-                    )
-
-    except Exception as e:
-        logger.error(f"Selection error: {e}")
+        # Proceed with the next source search
+        await search_movie(update, context)
 
 async def help_command(update: Update, context: ContextTypes.DEFAULT_TYPE):
     await update.message.reply_text(
-        "📖 *Help Menu:*\n\n"
+        "Help Menu:\n" 
         "/start - Start the bot\n"
         "/help - Show this help message\n"
-        "Type any movie name to search.",
-        parse_mode=ParseMode.MARKDOWN
+        "Type any movie name to search."
     )
 
 def main():
@@ -209,9 +156,14 @@ def main():
     application.add_handler(CommandHandler("start", start))
     application.add_handler(CommandHandler("help", help_command))
     application.add_handler(MessageHandler(filters.TEXT & ~filters.COMMAND, search_movie))
-    application.add_handler(CallbackQueryHandler(handle_result_selection, pattern="^dl:"))
+    application.add_handler(MessageHandler(filters.TEXT & ~filters.COMMAND, search_movie))
+    application.add_handler(CommandHandler("search", search_movie))
+    application.add_handler(MessageHandler(filters.TEXT & ~filters.COMMAND, search_movie))
+    application.add_handler(MessageHandler(filters.TEXT & ~filters.COMMAND, search_movie))
+    application.add_handler(MessageHandler(filters.TEXT & ~filters.COMMAND, search_movie))
+    application.add_handler(MessageHandler(filters.TEXT & ~filters.COMMAND, search_movie))
 
-    logger.info("Bot is running...")
+    print("Bot is running...")
     application.run_polling()
 
 if __name__ == "__main__":
