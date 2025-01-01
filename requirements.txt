@@ -2,9 +2,9 @@ gunicorn
 httpx
 lxml
 requests
-python-telegram-bot20.7
-beautifulsoup44.12.3
-aiohttp3.9.1
-flask3.0.0
-nest_asyncio1.5.8
-python-dotenv1.0.0
+python-telegram-bot=20.7
+beautifulsoup=44.12.3
+aiohttp=3.9.1
+flask=3.0.0
+nest_asyncio=1.5.8
+python-dotenv=1.0.0
