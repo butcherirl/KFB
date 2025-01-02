@@ -1,7 +1,7 @@
-python-telegram-bot
 flask
-aiohttp
-beautifulsoup4
 python-dotenv
 gunicorn
 nest_asyncio
+python-telegram-bot==20.3
+beautifulsoup4==4.12.2
+aiohttp==3.8.5
