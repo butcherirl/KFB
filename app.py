@@ -12,43 +12,49 @@ BOT_TOKEN = os.environ.get("BOT_TOKEN")
 BASE_URL = "https://new3.scloud.ninja"
 RESULTS_PER_PAGE = 5
 PORT = int(os.environ.get("PORT", "8080"))
+WEBHOOK_URL = os.environ.get("WEBHOOK_URL")
 
 # Cache setup
-search_cache = TTLCache(maxsize=100, ttl=3600)  # 1-hour cache
+search_cache = TTLCache(maxsize=100, ttl=3600)
 
 # Enable logging
-logging.basicConfig(format="%(asctime)s - %(name)s - %(levelname)s - %(message)s", level=logging.INFO)
+logging.basicConfig(
+    format="%(asctime)s - %(name)s - %(levelname)s - %(message)s",
+    level=logging.INFO
+)
 logger = logging.getLogger(__name__)
 
-async def fetch_with_timeout(session, url, timeout=10):
+async def fetch_with_timeout(session, url, timeout=30):
     try:
         async with session.get(url, timeout=timeout) as response:
             if response.status == 200:
                 return await response.text()
+            return None
     except Exception as e:
-        logger.error(f"Error fetching {url}: {e}")
-    return None
+        logger.error(f"Fetch error: {e}")
+        return None
 
 async def get_download_link(session, file_path):
-    file_url = f"{BASE_URL}{file_path}"
-    html = await fetch_with_timeout(session, file_url)
-    if html:
-        try:
+    try:
+        file_url = f"{BASE_URL}{file_path}"
+        html = await fetch_with_timeout(session, file_url)
+        if html:
             soup = BeautifulSoup(html, 'html.parser')
             download_link = soup.find('a', {'target': '_blank'})
             return download_link['href'] if download_link else None
-        except Exception as e:
-            logger.error(f"Error parsing download page: {e}")
-    return None
+        return None
+    except Exception as e:
+        logger.error(f"Download link error: {e}")
+        return None
 
 async def search_content(query: str):
-    cache_key = query.lower().strip()
-    if cache_key in search_cache:
-        return search_cache[cache_key]
-
-    search_url = f"{BASE_URL}/?search={urllib.parse.quote(query)}"
-    
     try:
+        cache_key = query.lower().strip()
+        if cache_key in search_cache:
+            return search_cache[cache_key]
+
+        search_url = f"{BASE_URL}/?search={urllib.parse.quote(query)}"
+        
         async with aiohttp.ClientSession() as session:
             html = await fetch_with_timeout(session, search_url)
             if not html:
@@ -68,14 +74,13 @@ async def search_content(query: str):
                         'size': size,
                         'file_path': file_path
                     })
-                except Exception as e:
-                    logger.error(f"Error parsing result: {e}")
+                except Exception:
                     continue
 
             search_cache[cache_key] = results
             return results
     except Exception as e:
-        logger.error(f"Error in search: {e}")
+        logger.error(f"Search error: {e}")
         return []
 
 def get_results_keyboard(results, page=0):
@@ -107,17 +112,20 @@ def get_results_keyboard(results, page=0):
     return InlineKeyboardMarkup(keyboard)
 
 async def start(update: Update, context: ContextTypes.DEFAULT_TYPE):
-    await update.message.reply_text(
-        "🎬 Welcome! Send me a movie or series name to search.\n\n"
-        "Example: `Inception`",
-        parse_mode='Markdown'
-    )
+    try:
+        await update.message.reply_text(
+            "🎬 Welcome! Send me a movie or series name to search.\n\n"
+            "Example: `Inception`",
+            parse_mode='Markdown'
+        )
+    except Exception as e:
+        logger.error(f"Start command error: {e}")
 
 async def search(update: Update, context: ContextTypes.DEFAULT_TYPE):
-    query = update.message.text
-    status_message = await update.message.reply_text("🔍 Searching... Please wait.")
-    
     try:
+        query = update.message.text
+        status_message = await update.message.reply_text("🔍 Searching... Please wait.")
+        
         results = await search_content(query)
         if not results:
             await status_message.edit_text("❌ No results found! Try another search term.")
@@ -133,13 +141,16 @@ async def search(update: Update, context: ContextTypes.DEFAULT_TYPE):
         )
     except Exception as e:
         logger.error(f"Search error: {e}")
-        await status_message.edit_text("❌ An error occurred while searching. Please try again later!")
+        try:
+            await update.message.reply_text("❌ An error occurred. Please try again!")
+        except Exception:
+            pass
 
 async def button_callback(update: Update, context: ContextTypes.DEFAULT_TYPE):
-    query = update.callback_query
-    await query.answer()
-    
     try:
+        query = update.callback_query
+        await query.answer()
+        
         if query.data.startswith("page_"):
             page = int(query.data.split("_")[1])
             results = context.user_data.get('results', [])
@@ -193,34 +204,59 @@ async def button_callback(update: Update, context: ContextTypes.DEFAULT_TYPE):
             
     except Exception as e:
         logger.error(f"Callback error: {e}")
-        await query.message.edit_text(
-            "❌ An error occurred. Please try searching again.",
-            reply_markup=None
-        )
+        try:
+            await query.message.edit_text(
+                "❌ An error occurred. Please try searching again.",
+                reply_markup=None
+            )
+        except Exception:
+            pass
+
+async def setup_webhook():
+    try:
+        if WEBHOOK_URL:
+            webhook_info = await application.bot.get_webhook_info()
+            if webhook_info.url != WEBHOOK_URL:
+                await application.bot.set_webhook(url=WEBHOOK_URL)
+    except Exception as e:
+        logger.error(f"Webhook setup error: {e}")
 
 async def main():
-    application = Application.builder().token(BOT_TOKEN).build()
+    global application
+    
+    try:
+        application = Application.builder().token(BOT_TOKEN).build()
+        
+        # Add handlers
+        application.add_handler(CommandHandler("start", start))
+        application.add_handler(MessageHandler(filters.TEXT & ~filters.COMMAND, search))
+        application.add_handler(CallbackQueryHandler(button_callback))
 
-    # Handlers
-    application.add_handler(CommandHandler("start", start))
-    application.add_handler(MessageHandler(filters.TEXT & ~filters.COMMAND, search))
-    application.add_handler(CallbackQueryHandler(button_callback))
+        # Initialize the application
+        await application.initialize()
 
-    # Start the bot
-    if os.environ.get("ENVIRONMENT") == "production":
-        # Production mode (Render.com)
-        await application.bot.set_webhook(os.environ.get("WEBHOOK_URL"))
-        await application.start()
-        await application.run_webhook(
-            listen="0.0.0.0",
-            port=PORT,
-            webhook_url=os.environ.get("WEBHOOK_URL"),
-            secret_token=os.environ.get("SECRET_TOKEN", "")
-        )
-    else:
-        # Development mode
-        await application.run_polling(allowed_updates=Update.ALL_TYPES)
+        if os.environ.get("ENVIRONMENT") == "production":
+            # Production mode (Render.com)
+            await setup_webhook()
+            await application.start()
+            await application.run_webhook(
+                listen="0.0.0.0",
+                port=PORT,
+                webhook_url=WEBHOOK_URL,
+                allowed_updates=Update.ALL_TYPES
+            )
+        else:
+            # Development mode
+            await application.start()
+            await application.run_polling(allowed_updates=Update.ALL_TYPES)
+            
+    except Exception as e:
+        logger.error(f"Startup error: {e}")
+        raise
 
 if __name__ == "__main__":
-    import asyncio
-    asyncio.run(main())
+    try:
+        import asyncio
+        asyncio.run(main())
+    except Exception as e:
+        logger.error(f"Main error: {e}")
