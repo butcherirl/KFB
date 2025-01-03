@@ -1,117 +1,127 @@
 import os
 import logging
-from telegram import Update, InlineKeyboardButton, InlineKeyboardMarkup
-from telegram.ext import Application, CommandHandler, MessageHandler, filters, ContextTypes
+from flask import Flask, request
+from telegram import Bot, InlineKeyboardButton, InlineKeyboardMarkup, Update
+from telegram.ext import Dispatcher, CommandHandler, MessageHandler, Filters
 import requests
-from bs4 import BeautifulSoup
-import urllib.parse
 from dotenv import load_dotenv
 
 # Load environment variables
 load_dotenv()
-
 BOT_TOKEN = os.getenv("BOT_TOKEN")
-BASE_URL = "https://new3.scloud.ninja/"
+WORKER_URL = os.getenv("WORKER_URL")  # Cloudflare Worker URL for search
+BASE_URL = os.getenv("BASE_URL")  # Direct base URL for final download link
 
-# Configure logging
-logging.basicConfig(format='%(asctime)s - %(name)s - %(levelname)s - %(message)s', level=logging.INFO)
+# Set up logging
+logging.basicConfig(format="%(asctime)s - %(name)s - %(levelname)s - %(message)s", level=logging.INFO)
 logger = logging.getLogger(__name__)
 
-# Start command
-async def start(update: Update, context: ContextTypes.DEFAULT_TYPE):
-    await update.message.reply_text(
-        "Welcome to the Movie Bot! 🎬\nType the name of the movie you want to search."
-    )
+# Initialize Flask app and Telegram bot
+app = Flask(__name__)
+bot = Bot(token=BOT_TOKEN)
 
-# Search movie function
-async def search_movie(update: Update, context: ContextTypes.DEFAULT_TYPE):
+@app.route("/")
+def index():
+    return "Bot is running!"
+
+@app.route(f"/{BOT_TOKEN}", methods=["POST"])
+def webhook():
+    update = Update.de_json(request.get_json(force=True), bot)
+    dispatcher.process_update(update)
+    return "OK"
+
+def start(update, context):
+    """Send a welcome message."""
+    update.message.reply_text("Welcome to the Movie Bot! 🎬\nType a movie name to search.")
+
+def search_movie(update, context):
+    """Search for movies based on user input."""
     query = update.message.text.strip()
+    chat_id = update.message.chat.id
+
     if not query:
-        await update.message.reply_text("Please enter a valid movie name!")
+        update.message.reply_text("❌ Please enter a valid movie name.")
         return
 
-    await update.message.reply_text(f"🔍 Searching for: {query}")
+    # Send initial response
+    bot.send_message(chat_id=chat_id, text=f"🔍 Searching for: {query}... Please wait.")
 
-    headers = {
-        'User-Agent': 'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/91.0.4472.124 Safari/537.36'
-    }
-
+    # Query Cloudflare Worker for movie results
     try:
-        # Search for the movie
-        search_url = f"{BASE_URL}?search={urllib.parse.quote(query)}"
-        response = requests.get(search_url, headers=headers)
+        response = requests.get(f"{WORKER_URL}?search={requests.utils.quote(query)}", timeout=10)
         if response.status_code != 200:
-            raise ConnectionError(f"Failed to connect to {BASE_URL} (HTTP {response.status_code})")
+            raise Exception(f"Cloudflare Worker error: {response.status_code}")
 
-        soup = BeautifulSoup(response.text, 'html.parser')
-        results = soup.find_all('a', class_='block')
+        results = response.json()  # Expecting Worker to return JSON
         if not results:
-            await update.message.reply_text("❌ No movies found!")
+            bot.send_message(chat_id=chat_id, text="❌ No results found. Try a different query.")
             return
 
-        keyboard = []
-        for idx, result in enumerate(results[:7]):  # Limit to first 7 results
-            result_card = result.find('div', class_='result-card rounded-lg p-4')
-            if not result_card:
-                continue
-
-            title_div = result_card.find('div', class_='mb-3')
-            if not title_div:
-                continue
-
-            movie_title = title_div.text.strip()
-            movie_href = result['href']
-            movie_page_url = f"{BASE_URL}{movie_href}"
-
-            # Fetch the download link from the movie page
-            movie_response = requests.get(movie_page_url, headers=headers)
-            if movie_response.status_code != 200:
-                raise ConnectionError(f"Failed to connect to movie page: {movie_page_url}")
-
-            movie_soup = BeautifulSoup(movie_response.text, 'html.parser')
-            download_button = movie_soup.find('a', href=True, class_='block w-full')
-            if not download_button:
-                continue
-
-            download_url = download_button['href']
-            keyboard.append([InlineKeyboardButton(movie_title, url=download_url)])
-
-        if not keyboard:
-            await update.message.reply_text("❌ No valid download links found!")
-            return
-
+        # Generate inline buttons for results
+        keyboard = [
+            [InlineKeyboardButton(movie["title"], callback_data=f"get_final:{movie['url']}")]
+            for movie in results
+        ]
         reply_markup = InlineKeyboardMarkup(keyboard)
-        await update.message.reply_text(
-            "📽️ Search Results (Top 7):",
-            reply_markup=reply_markup
-        )
 
-    except ConnectionError as e:
-        logger.error(f"Connection error: {e}")
-        await update.message.reply_text(f"❌ Could not connect to the server. Error: {str(e)}")
+        bot.send_message(chat_id=chat_id, text="📽️ Search Results:", reply_markup=reply_markup)
     except Exception as e:
-        logger.error(f"Unexpected error: {e}")
-        await update.message.reply_text(f"❌ An unexpected error occurred: {str(e)}")
+        logger.error(f"Error searching movies: {e}")
+        bot.send_message(chat_id=chat_id, text="❌ An error occurred while fetching results. Please try again later.")
 
-# Help command
-async def help_command(update: Update, context: ContextTypes.DEFAULT_TYPE):
-    await update.message.reply_text(
+def get_final_url(update, context):
+    """Fetch the final download URL from the base URL."""
+    query = update.callback_query
+    query.answer()
+
+    # Extract the selected movie URL from callback data
+    movie_url = query.data.split(":")[1]
+    chat_id = query.message.chat.id
+
+    # Notify the user
+    bot.send_message(chat_id=chat_id, text="🔗 Fetching the final download link... Please wait.")
+
+    # Fetch the final download URL
+    try:
+        response = requests.get(movie_url, headers={"User-Agent": "Mozilla/5.0"}, timeout=10)
+        if response.status_code != 200:
+            raise Exception(f"Base URL error: {response.status_code}")
+
+        # Parse the final download URL (example parsing logic)
+        from bs4 import BeautifulSoup
+        soup = BeautifulSoup(response.text, "html.parser")
+        download_button = soup.find("a", {"class": "fastdl"})
+        if not download_button:
+            bot.send_message(chat_id=chat_id, text="❌ Could not find the download link on the page.")
+            return
+
+        final_url = download_button["href"]
+        bot.send_message(chat_id=chat_id, text=f"🎥 Your download link:\n{final_url}")
+    except Exception as e:
+        logger.error(f"Error fetching final URL: {e}")
+        bot.send_message(chat_id=chat_id, text="❌ An error occurred while fetching the download link. Please try again later.")
+
+def help_command(update, context):
+    """Display help message."""
+    update.message.reply_text(
         "Help Menu:\n"
         "/start - Start the bot\n"
         "/help - Show this help message\n"
         "Type any movie name to search."
     )
 
-# Main function
-def main():
-    application = Application.builder().token(BOT_TOKEN).build()
-
-    application.add_handler(CommandHandler("start", start))
-    application.add_handler(CommandHandler("help", help_command))
-    application.add_handler(MessageHandler(filters.TEXT & ~filters.COMMAND, search_movie))
-
-    logger.info("Bot is running...")
-    application.run_polling()
+# Set up Telegram dispatcher
+dispatcher = Dispatcher(bot, None, workers=4)
+dispatcher.add_handler(CommandHandler("start", start))
+dispatcher.add_handler(CommandHandler("help", help_command))
+dispatcher.add_handler(MessageHandler(Filters.text & ~Filters.command, search_movie))
+dispatcher.add_handler(CallbackQueryHandler(get_final_url, pattern="^get_final:"))
 
 if __name__ == "__main__":
-    main()
+    # Set webhook for Render deployment
+    WEBHOOK_URL = os.getenv("RENDER_WEBHOOK_URL")
+    bot.set_webhook(url=f"{WEBHOOK_URL}/{BOT_TOKEN}")
+
+    # Start Flask app
+    port = int(os.environ.get("PORT", 5000))
+    app.run(host="0.0.0.0", port=port)
