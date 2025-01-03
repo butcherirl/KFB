@@ -1,32 +1,35 @@
 import os
+import logging
 from telegram import Update, InlineKeyboardButton, InlineKeyboardMarkup
 from telegram.ext import Application, CommandHandler, MessageHandler, filters, ContextTypes
 import requests
 from bs4 import BeautifulSoup
 import urllib.parse
-import asyncio
-import nest_asyncio
 from dotenv import load_dotenv
 
 # Load environment variables
 load_dotenv()
 
-# Apply nest_asyncio to fix event loop issues
-nest_asyncio.apply()
-
 BOT_TOKEN = os.getenv("BOT_TOKEN")
 BASE_URL = "https://new3.scloud.ninja/"
 
+# Configure logging
+logging.basicConfig(format='%(asctime)s - %(name)s - %(levelname)s - %(message)s', level=logging.INFO)
+logger = logging.getLogger(__name__)
+
+# Start command
 async def start(update: Update, context: ContextTypes.DEFAULT_TYPE):
-    keyboard = [[InlineKeyboardButton("Search Movies", callback_data='search')]]
-    reply_markup = InlineKeyboardMarkup(keyboard)
     await update.message.reply_text(
-        "Welcome to the Movie Bot! 🎬\nUse the button below to search for movies.",
-        reply_markup=reply_markup
+        "Welcome to the Movie Bot! 🎬\nType the name of the movie you want to search."
     )
 
+# Search movie function
 async def search_movie(update: Update, context: ContextTypes.DEFAULT_TYPE):
-    query = update.message.text
+    query = update.message.text.strip()
+    if not query:
+        await update.message.reply_text("Please enter a valid movie name!")
+        return
+
     await update.message.reply_text(f"🔍 Searching for: {query}")
 
     headers = {
@@ -34,12 +37,13 @@ async def search_movie(update: Update, context: ContextTypes.DEFAULT_TYPE):
     }
 
     try:
-        # First, search for the movie
+        # Search for the movie
         search_url = f"{BASE_URL}?search={urllib.parse.quote(query)}"
         response = requests.get(search_url, headers=headers)
-        soup = BeautifulSoup(response.text, 'html.parser')
+        if response.status_code != 200:
+            raise ConnectionError(f"Failed to connect to {BASE_URL} (HTTP {response.status_code})")
 
-        # Find all result cards
+        soup = BeautifulSoup(response.text, 'html.parser')
         results = soup.find_all('a', class_='block')
         if not results:
             await update.message.reply_text("❌ No movies found!")
@@ -61,6 +65,9 @@ async def search_movie(update: Update, context: ContextTypes.DEFAULT_TYPE):
 
             # Fetch the download link from the movie page
             movie_response = requests.get(movie_page_url, headers=headers)
+            if movie_response.status_code != 200:
+                raise ConnectionError(f"Failed to connect to movie page: {movie_page_url}")
+
             movie_soup = BeautifulSoup(movie_response.text, 'html.parser')
             download_button = movie_soup.find('a', href=True, class_='block w-full')
             if not download_button:
@@ -69,23 +76,33 @@ async def search_movie(update: Update, context: ContextTypes.DEFAULT_TYPE):
             download_url = download_button['href']
             keyboard.append([InlineKeyboardButton(movie_title, url=download_url)])
 
+        if not keyboard:
+            await update.message.reply_text("❌ No valid download links found!")
+            return
+
         reply_markup = InlineKeyboardMarkup(keyboard)
         await update.message.reply_text(
             "📽️ Search Results (Top 7):",
             reply_markup=reply_markup
         )
 
+    except ConnectionError as e:
+        logger.error(f"Connection error: {e}")
+        await update.message.reply_text(f"❌ Could not connect to the server. Error: {str(e)}")
     except Exception as e:
-        await update.message.reply_text(f"❌ Error occurred: {str(e)}")
+        logger.error(f"Unexpected error: {e}")
+        await update.message.reply_text(f"❌ An unexpected error occurred: {str(e)}")
 
+# Help command
 async def help_command(update: Update, context: ContextTypes.DEFAULT_TYPE):
     await update.message.reply_text(
-        "Help Menu:\n" 
+        "Help Menu:\n"
         "/start - Start the bot\n"
         "/help - Show this help message\n"
         "Type any movie name to search."
     )
 
+# Main function
 def main():
     application = Application.builder().token(BOT_TOKEN).build()
 
@@ -93,7 +110,7 @@ def main():
     application.add_handler(CommandHandler("help", help_command))
     application.add_handler(MessageHandler(filters.TEXT & ~filters.COMMAND, search_movie))
 
-    print("Bot is running...")
+    logger.info("Bot is running...")
     application.run_polling()
 
 if __name__ == "__main__":
