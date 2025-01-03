@@ -1,262 +1,100 @@
-import logging
 import os
 from telegram import Update, InlineKeyboardButton, InlineKeyboardMarkup
-from telegram.ext import Application, CommandHandler, MessageHandler, CallbackQueryHandler, filters, ContextTypes
-import aiohttp
+from telegram.ext import Application, CommandHandler, MessageHandler, filters, ContextTypes
+import requests
 from bs4 import BeautifulSoup
 import urllib.parse
-from cachetools import TTLCache
+import asyncio
+import nest_asyncio
+from dotenv import load_dotenv
 
-# Configuration
-BOT_TOKEN = os.environ.get("BOT_TOKEN")
-BASE_URL = "https://new3.scloud.ninja"
-RESULTS_PER_PAGE = 5
-PORT = int(os.environ.get("PORT", "8080"))
-WEBHOOK_URL = os.environ.get("WEBHOOK_URL")
+# Load environment variables
+load_dotenv()
 
-# Cache setup
-search_cache = TTLCache(maxsize=100, ttl=3600)
+# Apply nest_asyncio to fix event loop issues
+nest_asyncio.apply()
 
-# Enable logging
-logging.basicConfig(
-    format="%(asctime)s - %(name)s - %(levelname)s - %(message)s",
-    level=logging.INFO
-)
-logger = logging.getLogger(__name__)
-
-async def fetch_with_timeout(session, url, timeout=30):
-    try:
-        async with session.get(url, timeout=timeout) as response:
-            if response.status == 200:
-                return await response.text()
-            return None
-    except Exception as e:
-        logger.error(f"Fetch error: {e}")
-        return None
-
-async def get_download_link(session, file_path):
-    try:
-        file_url = f"{BASE_URL}{file_path}"
-        html = await fetch_with_timeout(session, file_url)
-        if html:
-            soup = BeautifulSoup(html, 'html.parser')
-            download_link = soup.find('a', {'target': '_blank'})
-            return download_link['href'] if download_link else None
-        return None
-    except Exception as e:
-        logger.error(f"Download link error: {e}")
-        return None
-
-async def search_content(query: str):
-    try:
-        cache_key = query.lower().strip()
-        if cache_key in search_cache:
-            return search_cache[cache_key]
-
-        search_url = f"{BASE_URL}/?search={urllib.parse.quote(query)}"
-        
-        async with aiohttp.ClientSession() as session:
-            html = await fetch_with_timeout(session, search_url)
-            if not html:
-                return []
-
-            soup = BeautifulSoup(html, 'html.parser')
-            results = []
-            
-            for result in soup.find_all('a', class_='block'):
-                try:
-                    title = result.find('div', class_='mb-3').text.strip()
-                    size = result.find('span', class_='px-3').text.strip()
-                    file_path = result['href']
-                    
-                    results.append({
-                        'title': title,
-                        'size': size,
-                        'file_path': file_path
-                    })
-                except Exception:
-                    continue
-
-            search_cache[cache_key] = results
-            return results
-    except Exception as e:
-        logger.error(f"Search error: {e}")
-        return []
-
-def get_results_keyboard(results, page=0):
-    keyboard = []
-    start_idx = page * RESULTS_PER_PAGE
-    end_idx = start_idx + RESULTS_PER_PAGE
-    current_results = results[start_idx:end_idx]
-    
-    for idx, result in enumerate(current_results, start=1):
-        title = result['title']
-        if len(title) > 50:
-            title = title[:47] + "..."
-        keyboard.append([
-            InlineKeyboardButton(
-                f"{idx}. {title} ({result['size']})",
-                callback_data=f"result_{start_idx + idx - 1}"
-            )
-        ])
-    
-    nav_buttons = []
-    if page > 0:
-        nav_buttons.append(InlineKeyboardButton("⬅️ Previous", callback_data=f"page_{page-1}"))
-    if end_idx < len(results):
-        nav_buttons.append(InlineKeyboardButton("Next ➡️", callback_data=f"page_{page+1}"))
-    
-    if nav_buttons:
-        keyboard.append(nav_buttons)
-    
-    return InlineKeyboardMarkup(keyboard)
+BOT_TOKEN = os.getenv("BOT_TOKEN")
+BASE_URL = "https://new3.scloud.ninja/"
 
 async def start(update: Update, context: ContextTypes.DEFAULT_TYPE):
-    try:
-        await update.message.reply_text(
-            "🎬 Welcome! Send me a movie or series name to search.\n\n"
-            "Example: `Inception`",
-            parse_mode='Markdown'
-        )
-    except Exception as e:
-        logger.error(f"Start command error: {e}")
+    keyboard = [[InlineKeyboardButton("Search Movies", callback_data='search')]]
+    reply_markup = InlineKeyboardMarkup(keyboard)
+    await update.message.reply_text(
+        "Welcome to the Movie Bot! 🎬\nUse the button below to search for movies.",
+        reply_markup=reply_markup
+    )
 
-async def search(update: Update, context: ContextTypes.DEFAULT_TYPE):
+async def search_movie(update: Update, context: ContextTypes.DEFAULT_TYPE):
+    query = update.message.text
+    await update.message.reply_text(f"🔍 Searching for: {query}")
+
+    headers = {
+        'User-Agent': 'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/91.0.4472.124 Safari/537.36'
+    }
+
     try:
-        query = update.message.text
-        status_message = await update.message.reply_text("🔍 Searching... Please wait.")
-        
-        results = await search_content(query)
+        # First, search for the movie
+        search_url = f"{BASE_URL}?search={urllib.parse.quote(query)}"
+        response = requests.get(search_url, headers=headers)
+        soup = BeautifulSoup(response.text, 'html.parser')
+
+        # Find all result cards
+        results = soup.find_all('a', class_='block')
         if not results:
-            await status_message.edit_text("❌ No results found! Try another search term.")
+            await update.message.reply_text("❌ No movies found!")
             return
 
-        context.user_data['results'] = results
-        context.user_data['current_query'] = query
-        
-        await status_message.edit_text(
-            f"🎯 Found {len(results)} results for: *{query}*",
-            parse_mode='Markdown',
-            reply_markup=get_results_keyboard(results)
+        keyboard = []
+        for idx, result in enumerate(results[:7]):  # Limit to first 7 results
+            result_card = result.find('div', class_='result-card rounded-lg p-4')
+            if not result_card:
+                continue
+
+            title_div = result_card.find('div', class_='mb-3')
+            if not title_div:
+                continue
+
+            movie_title = title_div.text.strip()
+            movie_href = result['href']
+            movie_page_url = f"{BASE_URL}{movie_href}"
+
+            # Fetch the download link from the movie page
+            movie_response = requests.get(movie_page_url, headers=headers)
+            movie_soup = BeautifulSoup(movie_response.text, 'html.parser')
+            download_button = movie_soup.find('a', href=True, class_='block w-full')
+            if not download_button:
+                continue
+
+            download_url = download_button['href']
+            keyboard.append([InlineKeyboardButton(movie_title, url=download_url)])
+
+        reply_markup = InlineKeyboardMarkup(keyboard)
+        await update.message.reply_text(
+            "📽️ Search Results (Top 7):",
+            reply_markup=reply_markup
         )
+
     except Exception as e:
-        logger.error(f"Search error: {e}")
-        try:
-            await update.message.reply_text("❌ An error occurred. Please try again!")
-        except Exception:
-            pass
+        await update.message.reply_text(f"❌ Error occurred: {str(e)}")
 
-async def button_callback(update: Update, context: ContextTypes.DEFAULT_TYPE):
-    try:
-        query = update.callback_query
-        await query.answer()
-        
-        if query.data.startswith("page_"):
-            page = int(query.data.split("_")[1])
-            results = context.user_data.get('results', [])
-            current_query = context.user_data.get('current_query', "Search")
-            
-            await query.message.edit_text(
-                f"🎯 Results for: *{current_query}*",
-                parse_mode='Markdown',
-                reply_markup=get_results_keyboard(results, page)
-            )
-        
-        elif query.data.startswith("result_"):
-            idx = int(query.data.split("_")[1])
-            results = context.user_data.get('results', [])
-            result = results[idx]
-            
-            loading_message = await query.message.edit_text("⏳ Fetching download link...")
-            
-            async with aiohttp.ClientSession() as session:
-                download_link = await get_download_link(session, result['file_path'])
-                
-                if download_link:
-                    keyboard = [[
-                        InlineKeyboardButton("⬇️ Download", url=download_link),
-                        InlineKeyboardButton("🔙 Back", callback_data="back_to_search")
-                    ]]
-                    
-                    await loading_message.edit_text(
-                        f"📥 *{result['title']}*\n"
-                        f"💾 Size: {result['size']}",
-                        parse_mode='Markdown',
-                        reply_markup=InlineKeyboardMarkup(keyboard)
-                    )
-                else:
-                    await loading_message.edit_text(
-                        "❌ Failed to get download link! Try selecting another result.",
-                        reply_markup=InlineKeyboardMarkup([[
-                            InlineKeyboardButton("🔙 Back to Results", callback_data="back_to_search")
-                        ]])
-                    )
-        
-        elif query.data == "back_to_search":
-            results = context.user_data.get('results', [])
-            current_query = context.user_data.get('current_query', "Search")
-            
-            await query.message.edit_text(
-                f"🎯 Results for: *{current_query}*",
-                parse_mode='Markdown',
-                reply_markup=get_results_keyboard(results)
-            )
-            
-    except Exception as e:
-        logger.error(f"Callback error: {e}")
-        try:
-            await query.message.edit_text(
-                "❌ An error occurred. Please try searching again.",
-                reply_markup=None
-            )
-        except Exception:
-            pass
+async def help_command(update: Update, context: ContextTypes.DEFAULT_TYPE):
+    await update.message.reply_text(
+        "Help Menu:\n" 
+        "/start - Start the bot\n"
+        "/help - Show this help message\n"
+        "Type any movie name to search."
+    )
 
-async def setup_webhook():
-    try:
-        if WEBHOOK_URL:
-            webhook_info = await application.bot.get_webhook_info()
-            if webhook_info.url != WEBHOOK_URL:
-                await application.bot.set_webhook(url=WEBHOOK_URL)
-    except Exception as e:
-        logger.error(f"Webhook setup error: {e}")
+def main():
+    application = Application.builder().token(BOT_TOKEN).build()
 
-async def main():
-    global application
-    
-    try:
-        application = Application.builder().token(BOT_TOKEN).build()
-        
-        # Add handlers
-        application.add_handler(CommandHandler("start", start))
-        application.add_handler(MessageHandler(filters.TEXT & ~filters.COMMAND, search))
-        application.add_handler(CallbackQueryHandler(button_callback))
+    application.add_handler(CommandHandler("start", start))
+    application.add_handler(CommandHandler("help", help_command))
+    application.add_handler(MessageHandler(filters.TEXT & ~filters.COMMAND, search_movie))
 
-        # Initialize the application
-        await application.initialize()
-
-        if os.environ.get("ENVIRONMENT") == "production":
-            # Production mode (Render.com)
-            await setup_webhook()
-            await application.start()
-            await application.run_webhook(
-                listen="0.0.0.0",
-                port=PORT,
-                webhook_url=WEBHOOK_URL,
-                allowed_updates=Update.ALL_TYPES
-            )
-        else:
-            # Development mode
-            await application.start()
-            await application.run_polling(allowed_updates=Update.ALL_TYPES)
-            
-    except Exception as e:
-        logger.error(f"Startup error: {e}")
-        raise
+    print("Bot is running...")
+    application.run_polling()
 
 if __name__ == "__main__":
-    try:
-        import asyncio
-        asyncio.run(main())
-    except Exception as e:
-        logger.error(f"Main error: {e}")
+    main()
