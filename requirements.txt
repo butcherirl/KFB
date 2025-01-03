@@ -6,3 +6,4 @@ python-telegram-bot
 beautifulsoup4
 aiohttp
 cachetools
+requests
